@@ -311,8 +311,32 @@ struct Habit: Identifiable, Codable {
     }
     
     var nextMilestone: Int {
-        let milestones = [7, 14, 30, 50, 100, 365]
+        let milestones = [3, 7, 14, 30, 50, 100, 365]
         return milestones.first(where: { $0 > currentStreak }) ?? currentStreak + 30
+    }
+    
+    var streakEmoji: String {
+        switch currentStreak {
+        case 0..<3: return "🌱"
+        case 3..<7: return "🔥"
+        case 7..<14: return "🚀"
+        case 14..<30: return "⚡️"
+        case 30..<50: return "💎"
+        case 50..<100: return "👑"
+        default: return "🌟"
+        }
+    }
+    
+    var nextMilestoneEmoji: String {
+        switch nextMilestone {
+        case 3: return "🔥"
+        case 7: return "🚀"
+        case 14: return "⚡️"
+        case 30: return "💎"
+        case 50: return "👑"
+        case 100: return "🌟"
+        default: return "🏆"
+        }
     }
     
     var taskHorizon: TaskHorizon {
@@ -389,6 +413,8 @@ enum TaskHorizon: String, CaseIterable {
 
 // MARK: - ViewModel
 class HabitTrackerViewModel: ObservableObject {
+    @Published var selectedDate: Date = Calendar.current.startOfDay(for: Date())
+    
     @Published var habits: [Habit] = [] {
         didSet { saveHabits() }
     }
@@ -484,7 +510,7 @@ class HabitTrackerViewModel: ObservableObject {
     
     func logFailure(for habit: Habit, reason: FailureReason) {
         if let index = habits.firstIndex(where: { $0.id == habit.id }) {
-            let today = Calendar.current.startOfDay(for: Date())
+            let today = Calendar.current.startOfDay(for: selectedDate)
             // Remove completion if exists
             habits[index].completedDates.remove(today)
             // Add failure log
@@ -495,9 +521,9 @@ class HabitTrackerViewModel: ObservableObject {
         }
     }
     
-    func toggleSubtask(for habit: Habit, subtask: Subtask, date: Date = Date()) {
+    func toggleSubtask(for habit: Habit, subtask: Subtask, date: Date? = nil) {
         if let index = habits.firstIndex(where: { $0.id == habit.id }) {
-            let today = Calendar.current.startOfDay(for: date)
+            let today = Calendar.current.startOfDay(for: date ?? selectedDate)
             let dateKey = habits[index].dateKey(for: today)
             
             var progress = habits[index].subtaskProgress[dateKey] ?? Set<UUID>()
@@ -523,7 +549,7 @@ class HabitTrackerViewModel: ObservableObject {
     func toggleCompletion(for habit: Habit) {
         if let index = habits.firstIndex(where: { $0.id == habit.id }) {
             var updatedHabit = habits[index]
-            let today = Calendar.current.startOfDay(for: Date())
+            let today = Calendar.current.startOfDay(for: selectedDate)
             let dateKey = updatedHabit.dateKey(for: today)
             
             if updatedHabit.completedDates.contains(today) {
@@ -819,12 +845,12 @@ class HabitTrackerViewModel: ObservableObject {
     }
     
     // MARK: - Advanced Features
-    func getMoodTrendData() -> [MoodChartData] {
+    func getMoodTrendData(days: Int = 7) -> [MoodChartData] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         var data: [MoodChartData] = []
         
-        for i in (0..<7).reversed() {
+        for i in (0..<days).reversed() {
             guard let d = calendar.date(byAdding: .day, value: -i, to: today) else { continue }
             let dayEntries = moodEntries.filter { calendar.isDate($0.timestamp, inSameDayAs: d) }
             if !dayEntries.isEmpty {
@@ -883,7 +909,7 @@ class HabitTrackerViewModel: ObservableObject {
         }
         
         if let best = habits.max(by: { $0.currentStreak < $1.currentStreak }), best.currentStreak > 2 {
-            insights.append("🔥 You're on fire with '\(best.name)'! Keep up the \(best.currentStreak)-day streak.")
+            insights.append("\(best.streakEmoji) You're on fire with '\(best.name)'! Keep up the \(best.currentStreak)-day streak.")
         }
         
         if let worst = habits.min(by: { $0.completedDates.count < $1.completedDates.count }), worst.completedDates.isEmpty {
@@ -952,6 +978,29 @@ class HabitTrackerViewModel: ObservableObject {
             print("Failed to create CSV")
             return nil
         }
+    }
+    
+    // MARK: - Added Analytics
+    struct AdherenceData: Identifiable {
+        let id = UUID()
+        let date: Date
+        let adherence: Double
+    }
+    
+    func getAdherenceTrendData(days: Int = 7) -> [AdherenceData] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        var data: [AdherenceData] = []
+        
+        // Exclude habits not created yet on that day or simplify by just comparing against total current habits that were created before/on date
+        for i in (0..<days).reversed() {
+            guard let d = calendar.date(byAdding: .day, value: -i, to: today) else { continue }
+            let activeHabits = habits.filter { calendar.startOfDay(for: $0.createdAt) <= d }
+            let potential = max(1, activeHabits.count)
+            let completed = activeHabits.filter { $0.completedDates.contains(d) }.count
+            data.append(AdherenceData(date: d, adherence: Double(completed) / Double(potential)))
+        }
+        return data
     }
 }
 
@@ -1190,7 +1239,7 @@ struct DashboardView: View {
             .frame(maxWidth: .infinity)
             .listRowBackground(Color.clear)
         } else {
-            let today = Calendar.current.startOfDay(for: Date())
+            let today = Calendar.current.startOfDay(for: viewModel.selectedDate)
             let activeHabits = viewModel.habits.filter { !$0.completedDates.contains(today) && !$0.skippedDates.contains(today) }
             let completedHabits = viewModel.habits.filter { $0.completedDates.contains(today) }
             let missedHabits = viewModel.habits.filter { $0.skippedDates.contains(today) && !$0.completedDates.contains(today) }
@@ -1285,7 +1334,7 @@ struct DashboardView: View {
             .padding(.vertical, 40)
             .frame(maxWidth: .infinity)
         } else {
-            let today = Calendar.current.startOfDay(for: Date())
+            let today = Calendar.current.startOfDay(for: viewModel.selectedDate)
             let activeHabits = viewModel.habits.filter { !$0.completedDates.contains(today) && !$0.skippedDates.contains(today) }
             let completedHabits = viewModel.habits.filter { $0.completedDates.contains(today) }
             let missedHabits = viewModel.habits.filter { $0.skippedDates.contains(today) && !$0.completedDates.contains(today) }
@@ -1381,12 +1430,12 @@ struct HabitCardView: View {
     @State private var showingFailureSheet = false
     
     var progressToday: Int {
-        let today = Calendar.current.startOfDay(for: Date())
+        let today = Calendar.current.startOfDay(for: viewModel.selectedDate)
         return habit.progressCounts[habit.dateKey(for: today), default: 0]
     }
     
     var isCompletedToday: Bool {
-        let today = Calendar.current.startOfDay(for: Date())
+        let today = Calendar.current.startOfDay(for: viewModel.selectedDate)
         return habit.completedDates.contains(today)
     }
     
@@ -1398,7 +1447,7 @@ struct HabitCardView: View {
                         Text("\(habit.currentStreak)")
                             .font(.system(.title2, design: .rounded, weight: .bold))
                             .foregroundColor(.primary)
-                        Text("🔥").font(.title3)
+                        Text(habit.streakEmoji).font(.title3)
                     }
                     Text("DAYS")
                         .font(.system(size: 10, weight: .bold))
@@ -1554,15 +1603,28 @@ struct DashboardHeaderView: View {
     
     var todayProgress: Double {
         guard !viewModel.habits.isEmpty else { return 0 }
-        let today = Calendar.current.startOfDay(for: Date())
+        let today = Calendar.current.startOfDay(for: viewModel.selectedDate)
         let completedToday = viewModel.habits.filter { $0.completedDates.contains(today) }.count
         return Double(completedToday) / Double(viewModel.habits.count)
     }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            DatePicker(
+                "Focus Date",
+                selection: Binding(
+                    get: { viewModel.selectedDate },
+                    set: { newDate in
+                        viewModel.selectedDate = Calendar.current.startOfDay(for: newDate)
+                    }
+                ),
+                displayedComponents: .date
+            )
+            .datePickerStyle(.compact)
+            .padding(.bottom, 8)
+            
             HStack {
-                Text("Today's Progress")
+                Text("Daily Progress")
                     .font(.headline)
                 Spacer()
                 Text("\(Int(todayProgress * 100))%")
@@ -1674,12 +1736,12 @@ struct HabitRowView: View {
     @State private var showingFailureSheet = false
     
     var progressToday: Int {
-        let today = Calendar.current.startOfDay(for: Date())
+        let today = Calendar.current.startOfDay(for: viewModel.selectedDate)
         return habit.progressCounts[habit.dateKey(for: today), default: 0]
     }
     
     var isCompletedToday: Bool {
-        let today = Calendar.current.startOfDay(for: Date())
+        let today = Calendar.current.startOfDay(for: viewModel.selectedDate)
         return habit.completedDates.contains(today)
     }
     
@@ -1838,14 +1900,6 @@ struct HabitRowView: View {
                 Label("Mark as Missed", systemImage: "xmark.octagon")
             }
         }
-        .swipeActions(edge: .leading) {
-            Button {
-                showingFailureSheet = true
-            } label: {
-                Label("Missed", systemImage: "xmark.octagon.fill")
-            }
-            .tint(.red)
-        }
         .confirmationDialog("Why did you miss this?", isPresented: $showingFailureSheet, titleVisibility: .visible) {
             ForEach(FailureReason.allCases, id: \.self) { reason in
                 Button(reason.rawValue) {
@@ -1909,7 +1963,7 @@ struct HabitDetailView: View {
                             .font(.title)
                             .fontWeight(.bold)
                             .foregroundColor(Color(hex: habit.themeColorHex))
-                        Text("Next Badge \(!habit.completedDates.isEmpty ? "🏆" : "")")
+                        Text("Next Tier \(habit.nextMilestoneEmoji)")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -2590,22 +2644,12 @@ struct BusinessAnalyticsView: View {
                 }
                 
                 // Weekly Mood Insight
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Image(systemName: "brain.head.profile")
-                            .foregroundColor(.purple)
-                        Text("Weekly Mood Insight")
-                            .font(.headline)
-                    }
-                    Text(viewModel.identifyMoodPatterns())
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(UIColor.secondarySystemGroupedBackground))
-                .cornerRadius(16)
-                .padding(.horizontal)
+                MoodTrendAnalyticsView(viewModel: viewModel)
+                    .padding(.horizontal)
+                
+                // Consistency Trend Insight
+                AdherenceTrendAnalyticsView(viewModel: viewModel)
+                    .padding(.horizontal)
                 
                 // KPI Grid
                 VStack(alignment: .leading, spacing: 16) {
@@ -3358,6 +3402,286 @@ struct AddBadHabitView: View {
     }
 }
 
-#Preview {
-    ContentView()
+struct MoodTrendAnalyticsView: View {
+    @ObservedObject var viewModel: HabitTrackerViewModel
+    @State private var rawSelectedDate: Date? = nil
+    @State private var timeRange: Int = 7
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Image(systemName: "waveform.path.ecg")
+                    .foregroundColor(.purple)
+                    .font(.title2)
+                Text("Mood Trends & Sentiment")
+                    .font(.title3)
+                    .fontWeight(.bold)
+                Spacer()
+                Picker("Time", selection: $timeRange) {
+                    Text("1W").tag(7)
+                    Text("1M").tag(30)
+                    Text("6M").tag(180)
+                    Text("1Y").tag(365)
+                }
+                .pickerStyle(.menu)
+                .font(.caption)
+            }
+            
+            Text(viewModel.identifyMoodPatterns())
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .padding(.bottom, 8)
+            
+            let data = viewModel.getMoodTrendData(days: timeRange)
+            if data.isEmpty {
+                Text("No mood data for this period to visualize.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding()
+            } else {
+                if let selectedData = selectedDataPoint(from: data) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(selectedData.date, format: .dateTime.month().day().weekday())
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        let nearestType = moodType(for: selectedData.avgVal)
+                        HStack {
+                            Text(nearestType.icon)
+                            Text(nearestType.label)
+                                .font(.headline)
+                        }
+                        .foregroundColor(nearestType.color)
+                        
+                        if let previewNote = selectedData.dailyNotes.first {
+                            Text("\"\(String(previewNote.text.prefix(40)))\(previewNote.text.count > 40 ? "..." : "")\"")
+                                .font(.caption)
+                                .italic()
+                                .foregroundColor(.secondary)
+                                .padding(.top, 2)
+                        }
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(UIColor.tertiarySystemGroupedBackground))
+                    .cornerRadius(12)
+                }
+                
+                Chart {
+                    ForEach(data) { item in
+                        LineMark(
+                            x: .value("Date", item.date),
+                            y: .value("Mood", item.avgVal)
+                        )
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [.purple, .indigo],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .lineStyle(StrokeStyle(lineWidth: 3))
+                        
+                        AreaMark(
+                            x: .value("Date", item.date),
+                            yStart: .value("Min", 1),
+                            yEnd: .value("Mood", item.avgVal)
+                        )
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [.purple.opacity(0.3), .clear],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        
+                        PointMark(
+                            x: .value("Date", item.date),
+                            y: .value("Mood", item.avgVal)
+                        )
+                        .foregroundStyle(moodType(for: item.avgVal).color)
+                        .symbolSize(60)
+                    }
+                    if let rawSelectedDate {
+                        RuleMark(x: .value("Active", rawSelectedDate))
+                            .lineStyle(StrokeStyle(lineWidth: 2, dash: [5]))
+                            .foregroundStyle(Color.secondary.opacity(0.5))
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .day)) { value in
+                        AxisGridLine()
+                        if timeRange <= 30 {
+                            AxisValueLabel(format: .dateTime.weekday(.abbreviated))
+                        } else {
+                            AxisValueLabel(format: .dateTime.month(.abbreviated))
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(preset: .aligned, position: .leading, values: [1, 3, 5, 7]) { value in
+                        if let v = value.as(Int.self) {
+                            AxisValueLabel(moodType(for: Double(v)).label)
+                        }
+                    }
+                }
+                .chartYScale(domain: 1...7)
+                .frame(height: 200)
+                .chartXSelection(value: $rawSelectedDate)
+            }
+        }
+        .padding()
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(20)
+        .shadow(color: Color.black.opacity(0.04), radius: 5, y: 2)
+    }
+    
+    private func moodType(for avgVal: Double) -> MoodType {
+        let val = Int(round(avgVal))
+        switch val {
+        case 7: return .radiant
+        case 6: return .productive
+        case 5: return .neutral
+        case 4: return .tired
+        case 3: return .stressed
+        case 2: return .sad
+        case 1: return .overwhelmed
+        default: return .neutral
+        }
+    }
+    
+    private func selectedDataPoint(from data: [MoodChartData]) -> MoodChartData? {
+        guard let raw = rawSelectedDate else { return nil }
+        return data.min(by: { abs($0.date.timeIntervalSince(raw)) < abs($1.date.timeIntervalSince(raw)) })
+    }
+}
+
+struct AdherenceTrendAnalyticsView: View {
+    @ObservedObject var viewModel: HabitTrackerViewModel
+    @State private var rawSelectedDate: Date? = nil
+    @State private var timeRange: Int = 30
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Image(systemName: "chart.line.uptrend.xyaxis")
+                    .foregroundColor(.blue)
+                    .font(.title2)
+                Text("Consistency Flow")
+                    .font(.title3)
+                    .fontWeight(.bold)
+                Spacer()
+                Picker("Time", selection: $timeRange) {
+                    Text("1W").tag(7)
+                    Text("1M").tag(30)
+                    Text("6M").tag(180)
+                    Text("1Y").tag(365)
+                }
+                .pickerStyle(.menu)
+                .font(.caption)
+            }
+            
+            Text("Track your daily completion rate over time to see long-term behavioral changes.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .padding(.bottom, 8)
+            
+            let data = viewModel.getAdherenceTrendData(days: timeRange)
+            if data.isEmpty {
+                Text("No data available.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding()
+            } else {
+                if let selectedData = selectedDataPoint(from: data) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(selectedData.date, format: .dateTime.month().day().weekday())
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Text("\(Int(selectedData.adherence * 100))% Consistently Completed")
+                            .font(.headline)
+                            .foregroundColor(.blue)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(UIColor.tertiarySystemGroupedBackground))
+                    .cornerRadius(12)
+                }
+                
+                Chart {
+                    ForEach(data) { item in
+                        LineMark(
+                            x: .value("Date", item.date),
+                            y: .value("Adherence", item.adherence)
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(Color.blue)
+                        .lineStyle(StrokeStyle(lineWidth: 3))
+                        
+                        AreaMark(
+                            x: .value("Date", item.date),
+                            yStart: .value("Min", 0),
+                            yEnd: .value("Adherence", item.adherence)
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [.blue.opacity(0.3), .clear],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        
+                        if timeRange <= 30 {
+                            PointMark(
+                                x: .value("Date", item.date),
+                                y: .value("Adherence", item.adherence)
+                            )
+                            .foregroundStyle(Color.blue)
+                            .symbolSize(40)
+                        }
+                    }
+                    if let rawSelectedDate {
+                        RuleMark(x: .value("Active", rawSelectedDate))
+                            .lineStyle(StrokeStyle(lineWidth: 2, dash: [5]))
+                            .foregroundStyle(Color.secondary.opacity(0.5))
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: timeRange > 30 ? .month : .day)) { value in
+                        AxisGridLine()
+                        if timeRange <= 30 {
+                            AxisValueLabel(format: .dateTime.weekday(.abbreviated))
+                        } else {
+                            AxisValueLabel(format: .dateTime.month(.abbreviated))
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: [0.0, 0.25, 0.5, 0.75, 1.0]) { value in
+                        if let v = value.as(Double.self) {
+                            AxisValueLabel("\(Int(v * 100))%")
+                        }
+                    }
+                }
+                .chartYScale(domain: 0...1.0)
+                .frame(height: 200)
+                .chartXSelection(value: $rawSelectedDate)
+            }
+        }
+        .padding()
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(20)
+        .shadow(color: Color.black.opacity(0.04), radius: 5, y: 2)
+    }
+    
+    private func selectedDataPoint(from data: [HabitTrackerViewModel.AdherenceData]) -> HabitTrackerViewModel.AdherenceData? {
+        guard let raw = rawSelectedDate else { return nil }
+        return data.min(by: { abs($0.date.timeIntervalSince(raw)) < abs($1.date.timeIntervalSince(raw)) })
+    }
 }
